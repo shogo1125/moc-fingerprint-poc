@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MoC 指紋認証 PoC</title>
+  <style>
+    /* -----------------------------------------------
+       リセット & ベース
+    ----------------------------------------------- */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --clr-bg:       #0f1117;
+      --clr-surface:  #1a1d27;
+      --clr-border:   #2a2d3e;
+      --clr-primary:  #6366f1;   /* インジゴ */
+      --clr-success:  #22c55e;
+      --clr-error:    #ef4444;
+      --clr-warn:     #f59e0b;
+      --clr-text:     #e2e8f0;
+      --clr-muted:    #64748b;
+      --radius:       12px;
+      --shadow:       0 4px 24px rgba(0,0,0,.4);
+    }
+
+    body {
+      font-family: "Segoe UI", "Hiragino Kaku Gothic ProN", sans-serif;
+      background: var(--clr-bg);
+      color: var(--clr-text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+
+    /* -----------------------------------------------
+       ヘッダー
+    ----------------------------------------------- */
+    header {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+    header h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -.5px;
+    }
+    header p {
+      color: var(--clr-muted);
+      font-size: .9rem;
+      margin-top: .4rem;
+    }
+
+    /* 指紋アイコン（CSS のみ） */
+    .fingerprint-icon {
+      font-size: 4rem;
+      margin-bottom: 1rem;
+      display: block;
+      filter: drop-shadow(0 0 16px var(--clr-primary));
+    }
+
+    /* -----------------------------------------------
+       カード
+    ----------------------------------------------- */
+    .card {
+      background: var(--clr-surface);
+      border: 1px solid var(--clr-border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 2rem;
+      width: 100%;
+      max-width: 440px;
+      margin-bottom: 1.5rem;
+    }
+    .card h2 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+    }
+
+    /* -----------------------------------------------
+       フォーム要素
+    ----------------------------------------------- */
+    label {
+      display: block;
+      font-size: .85rem;
+      color: var(--clr-muted);
+      margin-bottom: .4rem;
+    }
+    input[type="text"],
+    input[type="email"] {
+      width: 100%;
+      background: var(--clr-bg);
+      border: 1px solid var(--clr-border);
+      border-radius: 8px;
+      padding: .6rem .9rem;
+      color: var(--clr-text);
+      font-size: .95rem;
+      margin-bottom: 1rem;
+      outline: none;
+      transition: border-color .2s;
+    }
+    input:focus { border-color: var(--clr-primary); }
+
+    /* -----------------------------------------------
+       ボタン
+    ----------------------------------------------- */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: .5rem;
+      width: 100%;
+      padding: .75rem 1.25rem;
+      border: none;
+      border-radius: 8px;
+      font-size: .95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .2s, transform .1s;
+    }
+    .btn:active { transform: scale(.98); }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    .btn-primary { background: var(--clr-primary); color: #fff; }
+    .btn-success { background: var(--clr-success); color: #fff; }
+    .btn-outline {
+      background: transparent;
+      border: 1px solid var(--clr-border);
+      color: var(--clr-text);
+      margin-top: .75rem;
+    }
+
+    /* -----------------------------------------------
+       ステータスバナー
+    ----------------------------------------------- */
+    #status {
+      width: 100%;
+      max-width: 440px;
+      padding: .9rem 1.1rem;
+      border-radius: 8px;
+      font-size: .9rem;
+      display: none;
+      align-items: flex-start;
+      gap: .6rem;
+      margin-bottom: 1rem;
+    }
+    #status.show { display: flex; }
+    #status.info    { background: #1e293b; border: 1px solid var(--clr-primary); }
+    #status.success { background: #14532d; border: 1px solid var(--clr-success); }
+    #status.error   { background: #450a0a; border: 1px solid var(--clr-error); }
+    #status.warning { background: #431407; border: 1px solid var(--clr-warn); }
+
+    /* -----------------------------------------------
+       ゲートパネル（認証成功後）
+    ----------------------------------------------- */
+    #gate-panel {
+      display: none;
+      width: 100%;
+      max-width: 440px;
+    }
+    #gate-panel.show { display: block; }
+
+    .gate-card {
+      border-radius: var(--radius);
+      padding: 2rem 1.5rem;
+      text-align: center;
+      transition: all .4s ease;
+    }
+    .gate-card.unlocked {
+      background: linear-gradient(160deg, #052e16, #0f172a);
+      border: 2px solid var(--clr-success);
+      box-shadow: 0 0 32px rgba(34,197,94,.25);
+    }
+    .gate-card.locked {
+      background: linear-gradient(160deg, #1a0000, #0f172a);
+      border: 2px solid var(--clr-error);
+      box-shadow: 0 0 32px rgba(239,68,68,.15);
+    }
+
+    .gate-icon {
+      font-size: 3.5rem;
+      display: block;
+      margin-bottom: .75rem;
+      /* 解錠アニメーション */
+      animation: gate-open .5s ease-out;
+    }
+    @keyframes gate-open {
+      from { transform: scale(.6); opacity: 0; }
+      to   { transform: scale(1);  opacity: 1; }
+    }
+
+    .gate-status {
+      font-size: 1.4rem;
+      font-weight: 800;
+      letter-spacing: .5px;
+      margin-bottom: .5rem;
+    }
+    .gate-card.unlocked .gate-status { color: var(--clr-success); }
+    .gate-card.locked   .gate-status { color: var(--clr-error); }
+
+    .gate-user   { font-size: 1.1rem; font-weight: 700; margin-top: .5rem; }
+    .gate-detail {
+      color: var(--clr-muted);
+      font-size: .85rem;
+      margin-top: .3rem;
+      line-height: 1.6;
+    }
+
+    /* 計測結果バー */
+    .timing-bar {
+      margin-top: 1.25rem;
+      background: #1e293b;
+      border: 1px solid var(--clr-border);
+      border-radius: 8px;
+      padding: .75rem 1rem;
+      font-size: .8rem;
+      text-align: left;
+    }
+    .timing-bar .t-label { color: var(--clr-muted); margin-bottom: .35rem; }
+    .timing-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: .15rem 0;
+    }
+    .timing-row .t-name  { color: var(--clr-muted); }
+    .timing-row .t-val   { font-family: monospace; font-weight: 600; }
+    .t-val.fast   { color: var(--clr-success); }
+    .t-val.medium { color: var(--clr-warn); }
+    .t-val.slow   { color: var(--clr-error); }
+
+    /* -----------------------------------------------
+       フロー説明
+    ----------------------------------------------- */
+    .flow-box {
+      width: 100%;
+      max-width: 440px;
+      background: var(--clr-surface);
+      border: 1px solid var(--clr-border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.5rem;
+    }
+    .flow-box h3 { font-size: .85rem; color: var(--clr-muted); margin-bottom: .75rem; }
+    .flow-step {
+      display: flex;
+      gap: .75rem;
+      align-items: flex-start;
+      margin-bottom: .5rem;
+      font-size: .85rem;
+    }
+    .step-num {
+      min-width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--clr-primary);
+      color: #fff;
+      font-size: .75rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* ネットワークログ（セキュリティ検証用） */
+    #net-log {
+      font-family: monospace;
+      font-size: .75rem;
+      color: var(--clr-muted);
+      background: var(--clr-bg);
+      border: 1px solid var(--clr-border);
+      border-radius: 6px;
+      padding: .75rem;
+      max-height: 200px;
+      overflow-y: auto;
+      margin-top: .75rem;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ヘッダー -->
+<header>
+  <span class="fingerprint-icon">☝️</span>
+  <h1>MoC 指紋認証 PoC</h1>
+  <p>Match-on-Chip + FIDO2/WebAuthn — 生体データはデバイス外に出ません</p>
+</header>
+
+<!-- ステータスバナー -->
+<div id="status"></div>
+
+<!-- ゲートパネル（認証成功後） -->
+<div id="gate-panel">
+  <div class="gate-card unlocked" id="gate-card">
+    <span class="gate-icon" id="gate-icon">🔓</span>
+    <div class="gate-status" id="gate-status">ゲート解錠</div>
+    <div class="gate-user" id="gate-user"></div>
+    <div class="gate-detail" id="gate-detail"></div>
+    <!-- 認証スピード計測結果 -->
+    <div class="timing-bar" id="timing-bar" style="display:none;">
+      <div class="t-label">認証時間計測（PoC検証用）</div>
+      <div class="timing-row">
+        <span class="t-name">指タッチ → 認証完了（合計）</span>
+        <span class="t-val" id="t-total"></span>
+      </div>
+      <div class="timing-row">
+        <span class="t-name">  うち Lambda 処理時間</span>
+        <span class="t-val" id="t-lambda"></span>
+      </div>
+      <div class="timing-row">
+        <span class="t-name">  うちデバイス+通信</span>
+        <span class="t-val" id="t-device"></span>
+      </div>
+    </div>
+  </div>
+  <button class="btn btn-outline" id="gate-back-btn" onclick="lockGate()"
+          style="margin-top:.75rem;">施錠して戻る</button>
+</div>
+
+<!-- 登録カード -->
+<div class="card" id="register-card">
+  <h2>📲 デバイス登録</h2>
+  <label for="reg-user-id">ユーザーID（メールアドレス等）</label>
+  <input type="email" id="reg-user-id" placeholder="user@example.com" />
+  <label for="reg-display-name">表示名</label>
+  <input type="text" id="reg-display-name" placeholder="山田 太郎" />
+  <button class="btn btn-primary" id="register-btn" onclick="startRegistration()">
+    ☝️ MoCリーダーで指紋を登録する
+  </button>
+</div>
+
+<!-- 認証カード -->
+<div class="card" id="auth-card">
+  <h2>🔐 ログイン（指紋認証）</h2>
+  <label for="auth-user-id">ユーザーID</label>
+  <input type="email" id="auth-user-id" placeholder="user@example.com" />
+  <button class="btn btn-success" id="auth-btn" onclick="startAuthentication()">
+    ☝️ MoCリーダーに指を置いてログイン
+  </button>
+</div>
+
+<!-- フロー説明 -->
+<div class="flow-box">
+  <h3>🔍 MoC方式の認証フロー（このPoC）</h3>
+  <div class="flow-step">
+    <span class="step-num">1</span>
+    <span>サーバーがチャレンジ（乱数）を発行 → ブラウザへ</span>
+  </div>
+  <div class="flow-step">
+    <span class="step-num">2</span>
+    <span>ブラウザがUSBリーダーへ署名を依頼</span>
+  </div>
+  <div class="flow-step">
+    <span class="step-num">3</span>
+    <span><strong>MoCチップ内で指紋照合</strong>（生体データはここで完結）</span>
+  </div>
+  <div class="flow-step">
+    <span class="step-num">4</span>
+    <span>照合成功 → チップ内秘密鍵でチャレンジに署名</span>
+  </div>
+  <div class="flow-step">
+    <span class="step-num">5</span>
+    <span>署名のみをサーバーへ送信 → 公開鍵で検証</span>
+  </div>
+
+  <!-- ネットワークログ: 送信データを可視化（セキュリティ検証） -->
+  <div style="margin-top:1rem;">
+    <label style="font-size:.8rem;color:var(--clr-muted);">
+      📡 ネットワーク送受信ログ（生体データが含まれていないことを確認）
+    </label>
+    <div id="net-log">— ここに送受信データが表示されます —</div>
+  </div>
+</div>
+
+<script>
+// -------------------------------------------------------
+// 設定
+// -------------------------------------------------------
+
+// API エンドポイント（ローカル開発 or CloudFront 経由に切り替え）
+const IS_LOCAL = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+const API_BASE = IS_LOCAL ? 'http://localhost:3001' : '';  // CloudFront は同一オリジン
+const API_PREFIX = '/api';  // SAM / CloudFront 共通の API パス
+
+// -------------------------------------------------------
+// ユーティリティ
+// -------------------------------------------------------
+
+/**
+ * base64url → ArrayBuffer
+ * WebAuthn API は ArrayBuffer を要求するためデコードが必要
+ */
+function base64urlToBuffer(base64url) {
+  // base64url → base64 変換（+/= の補完）
+  const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = base64.padEnd(base64.length + (4 - base64.length % 4) % 4, '=');
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+/**
+ * ArrayBuffer → base64url
+ * WebAuthn の結果（ArrayBuffer）をサーバーへ送るためにエンコード
+ */
+function bufferToBase64url(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+/**
+ * サーバー専用フィールドを除き WebAuthn オプションを組み立てる
+ */
+function buildCreationOptions(serverOptions) {
+  const { challengeId, userId_str, ...rest } = serverOptions;
+  return {
+    publicKey: {
+      ...rest,
+      challenge: base64urlToBuffer(rest.challenge),
+      user: {
+        ...rest.user,
+        id: base64urlToBuffer(rest.user.id),
+      },
+      excludeCredentials: (rest.excludeCredentials || []).map(c => ({
+        ...c,
+        id: base64urlToBuffer(c.id),
+      })),
+    },
+  };
+}
+
+function buildRequestOptions(serverOptions) {
+  const { challengeId, ...rest } = serverOptions;
+  return {
+    publicKey: {
+      ...rest,
+      challenge: base64urlToBuffer(rest.challenge),
+      allowCredentials: (rest.allowCredentials || []).map(c => ({
+        ...c,
+        id: base64urlToBuffer(c.id),
+      })),
+    },
+  };
+}
+
+async function postJson(path, body) {
+  const url = `${API_BASE}${API_PREFIX}${path}`;
+  const payload = JSON.stringify(body);
+
+  // ネットワークログに送信内容を記録（生体データが含まれていないことを確認）
+  appendNetLog('→ POST ' + url);
+  appendNetLog('  送信: ' + summarizePayload(body));
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: payload,
+  });
+
+  const data = await res.json();
+  appendNetLog('← ' + res.status + ' 受信: ' + summarizePayload(data));
+  appendNetLog('');
+
+  if (!res.ok) throw new Error(data.error || 'サーバーエラー');
+  return data;
+}
+
+/**
+ * ペイロードのサマリーを返す（長い値は省略）
+ * 生体データが含まれないことを目視確認するために表示
+ */
+function summarizePayload(obj) {
+  const s = JSON.stringify(obj, (k, v) => {
+    if (typeof v === 'string' && v.length > 60) return v.slice(0, 60) + '…';
+    return v;
+  });
+  return s;
+}
+
+// -------------------------------------------------------
+// UI ヘルパー
+// -------------------------------------------------------
+
+function showStatus(type, message) {
+  const el = document.getElementById('status');
+  const icons = { info: 'ℹ️', success: '✅', error: '❌', warning: '⚠️' };
+  el.className = `show ${type}`;
+  el.innerHTML = `<span>${icons[type] || ''}</span><span>${message}</span>`;
+}
+
+function clearStatus() {
+  const el = document.getElementById('status');
+  el.className = '';
+  el.innerHTML = '';
+}
+
+function setLoading(btnId, loading, defaultText) {
+  const btn = document.getElementById(btnId);
+  btn.disabled = loading;
+  btn.textContent = loading ? '処理中...' : defaultText;
+}
+
+function appendNetLog(line) {
+  const el = document.getElementById('net-log');
+  el.textContent += line + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+
+// -------------------------------------------------------
+// 登録フロー
+// -------------------------------------------------------
+
+async function startRegistration() {
+  const userId = document.getElementById('reg-user-id').value.trim();
+  const displayName = document.getElementById('reg-display-name').value.trim() || userId;
+
+  if (!userId) {
+    showStatus('error', 'ユーザーID を入力してください');
+    return;
+  }
+
+  clearStatus();
+  setLoading('register-btn', true, '');
+
+  try {
+    // Step 1: サーバーにチャレンジを要求
+    showStatus('info', 'サーバーにチャレンジを要求中...');
+    const options = await postJson('/register/begin', { userId, displayName });
+    const challengeId = options.challengeId;
+
+    // Step 2: WebAuthn API でデバイス登録（MoCリーダーに指を置く）
+    showStatus('info', '☝️ MoCリーダーに指を置いてください...');
+    const credential = await navigator.credentials.create(buildCreationOptions(options));
+
+    showStatus('info', '公開鍵をサーバーに送信中...');
+
+    // Step 3: 公開鍵（生体データではない）をサーバーへ送信
+    const credentialForServer = {
+      id: credential.id,
+      rawId: bufferToBase64url(credential.rawId),
+      type: credential.type,
+      response: {
+        // attestationObject: デバイス証明情報（公開鍵を含む）
+        attestationObject: bufferToBase64url(credential.response.attestationObject),
+        // clientDataJSON: チャレンジ・オリジン情報（指紋データなし）
+        clientDataJSON: bufferToBase64url(credential.response.clientDataJSON),
+      },
+    };
+
+    const result = await postJson('/register/complete', {
+      challengeId,
+      userId,
+      displayName,
+      credential: credentialForServer,
+    });
+
+    showStatus('success', `登録完了！ credentialId: ${result.credentialId.slice(0, 16)}...`);
+
+  } catch (err) {
+    if (err.name === 'NotAllowedError') {
+      showStatus('warning', '操作がキャンセルされました（タイムアウトまたは指紋不一致）');
+    } else if (err.name === 'SecurityError') {
+      showStatus('error', 'セキュリティエラー: HTTPS 環境で実行してください');
+    } else {
+      showStatus('error', `エラー: ${err.message}`);
+    }
+  } finally {
+    setLoading('register-btn', false, '☝️ MoCリーダーで指紋を登録する');
+  }
+}
+
+// -------------------------------------------------------
+// 認証フロー
+// -------------------------------------------------------
+
+async function startAuthentication() {
+  const userId = document.getElementById('auth-user-id').value.trim();
+
+  if (!userId) {
+    showStatus('error', 'ユーザーID を入力してください');
+    return;
+  }
+
+  clearStatus();
+  setLoading('auth-btn', true, '');
+
+  try {
+    // Step 1: サーバーにチャレンジを要求
+    showStatus('info', 'サーバーにチャレンジを要求中...');
+    const options = await postJson('/auth/begin', { userId });
+    const challengeId = options.challengeId;
+
+    // Step 2: MoCリーダー内で指紋照合 → 署名生成（生体データは外に出ない）
+    showStatus('info', '☝️ MoCリーダーに指を置いてください...');
+
+    // t0: 指タッチを待ち始める瞬間（これが「指を置いてから」の起点）
+    const t0 = performance.now();
+    const credential = await navigator.credentials.get(buildRequestOptions(options));
+
+    showStatus('info', '署名をサーバーに送信して検証中...');
+
+    // Step 3: 署名（生体データではない）をサーバーへ送信
+    const credentialForServer = {
+      id: credential.id,
+      rawId: bufferToBase64url(credential.rawId),
+      type: credential.type,
+      response: {
+        authenticatorData: bufferToBase64url(credential.response.authenticatorData),
+        clientDataJSON:    bufferToBase64url(credential.response.clientDataJSON),
+        signature:         bufferToBase64url(credential.response.signature),
+        userHandle: credential.response.userHandle
+          ? bufferToBase64url(credential.response.userHandle)
+          : null,
+      },
+    };
+
+    const result = await postJson('/auth/complete', {
+      challengeId,
+      userId,
+      credential: credentialForServer,
+    });
+
+    // t1: サーバー検証完了 = 「認証完了」の終点
+    const t1 = performance.now();
+    const totalMs   = Math.round(t1 - t0);
+    const lambdaMs  = result.lambdaTimeMs ?? null;
+
+    // 認証成功 → ゲート解錠表示
+    showGatePanel(result.displayName || userId, userId, totalMs, lambdaMs);
+
+  } catch (err) {
+    if (err.name === 'NotAllowedError') {
+      showStatus('warning', '指紋照合に失敗またはキャンセルされました');
+    } else if (err.name === 'SecurityError') {
+      showStatus('error', 'セキュリティエラー: HTTPS 環境で実行してください');
+    } else {
+      showStatus('error', `認証エラー: ${err.message}`);
+    }
+  } finally {
+    setLoading('auth-btn', false, '☝️ MoCリーダーに指を置いてログイン');
+  }
+}
+
+// -------------------------------------------------------
+// ゲートシミュレーション
+// -------------------------------------------------------
+
+/**
+ * 認証成功後にゲート解錠パネルを表示する。
+ * @param {string} displayName 認証者の表示名
+ * @param {string} userId      ユーザー ID
+ * @param {number} totalMs     指タッチ〜完了までの合計時間（ms）
+ * @param {number|null} lambdaMs Lambda 処理時間（ms）
+ */
+function showGatePanel(displayName, userId, totalMs, lambdaMs) {
+  clearStatus();
+
+  // カード・登録フォームを非表示
+  document.getElementById('register-card').style.display = 'none';
+  document.getElementById('auth-card').style.display = 'none';
+
+  // ゲートアイコン・ステータス設定
+  document.getElementById('gate-icon').textContent   = '🔓';
+  document.getElementById('gate-status').textContent = 'ゲート解錠';
+  document.getElementById('gate-user').textContent   = displayName;
+  document.getElementById('gate-detail').textContent = userId;
+  document.getElementById('gate-card').className     = 'gate-card unlocked';
+
+  // 計測結果を表示
+  if (totalMs != null) {
+    const deviceMs  = lambdaMs != null ? Math.max(0, totalMs - lambdaMs) : null;
+    const timingBar = document.getElementById('timing-bar');
+    timingBar.style.display = '';
+
+    const setTiming = (id, ms) => {
+      const el = document.getElementById(id);
+      if (ms == null) { el.textContent = '—'; return; }
+      const cls = ms < 500 ? 'fast' : ms < 1000 ? 'medium' : 'slow';
+      el.textContent = ms + ' ms';
+      el.className = `t-val ${cls}`;
+    };
+    setTiming('t-total',  totalMs);
+    setTiming('t-lambda', lambdaMs);
+    setTiming('t-device', deviceMs);
+
+    // ネットワークログにも記録
+    appendNetLog(`--- 認証時間: 合計 ${totalMs}ms / Lambda ${lambdaMs ?? '?'}ms ---`);
+
+    // 1秒要件の判定
+    if (totalMs > 1000) {
+      showStatus('warning', `認証に ${totalMs}ms かかりました（要件: 1000ms 以内）`);
+    }
+  }
+
+  document.getElementById('gate-panel').classList.add('show');
+
+  // 5秒後に自動で施錠（PoC デモ用）
+  setTimeout(lockGate, 5000);
+}
+
+/** ゲートを施錠状態に戻す（デモリセット） */
+function lockGate() {
+  const card = document.getElementById('gate-card');
+  const icon = document.getElementById('gate-icon');
+  const stat = document.getElementById('gate-status');
+
+  // 施錠アニメーション
+  icon.textContent = '🔒';
+  stat.textContent = 'ゲート施錠';
+  card.className   = 'gate-card locked';
+
+  // 1秒後にフォームへ戻る
+  setTimeout(() => {
+    document.getElementById('gate-panel').classList.remove('show');
+    document.getElementById('register-card').style.display = '';
+    document.getElementById('auth-card').style.display = '';
+    document.getElementById('timing-bar').style.display = 'none';
+    clearStatus();
+    appendNetLog('— 施錠 / セッション終了 —\n');
+  }, 1000);
+}
+
+// -------------------------------------------------------
+// 初期化: WebAuthn サポート確認
+// -------------------------------------------------------
+(function checkWebAuthnSupport() {
+  if (!window.PublicKeyCredential) {
+    showStatus('error',
+      'このブラウザは WebAuthn に対応していません。Chrome / Edge / Firefox の最新版を使用してください。');
+    document.querySelectorAll('.btn').forEach(b => b.disabled = true);
+    return;
+  }
+
+  // プラットフォーム認証器（Windows Hello等）の有無確認
+  PublicKeyCredential
+    .isUserVerifyingPlatformAuthenticatorAvailable()
+    .then(available => {
+      if (!available) {
+        showStatus('info',
+          '外部認証器（MoCリーダー）を使用します。USBリーダーを接続してください。');
+      }
+    });
+})();
+</script>
+</body>
+</html>

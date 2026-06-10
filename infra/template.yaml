@@ -1,0 +1,341 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  MoC指紋認証 PoC — FIDO2/WebAuthn Relying Party on AWS
+  MoCリーダー（静電容量式）+ パスキー方式による指紋認証システム
+
+# -------------------------------------------------------
+# パラメータ: デプロイ時に上書き可能
+# -------------------------------------------------------
+Parameters:
+  StageName:
+    Type: String
+    Default: poc
+    Description: "API Gateway ステージ名（例: poc, dev, prod）"
+
+  AllowedOrigin:
+    Type: String
+    Default: "*"
+    Description: >
+      CORS許可オリジン。本番では CloudFront の URL を指定してください。
+      例: https://dxxxxx.cloudfront.net
+
+  RPId:
+    Type: String
+    Default: "localhost"
+    Description: >
+      FIDO2 の Relying Party ID。ドメイン名を指定します。
+      PoC では localhost、本番では CloudFront ドメインなど。
+
+  RPName:
+    Type: String
+    Default: "MoC指紋認証 PoC"
+    Description: FIDO2 の Relying Party 表示名
+
+# -------------------------------------------------------
+# グローバル設定: Lambda 共通設定
+# -------------------------------------------------------
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 30
+    MemorySize: 256
+    Environment:
+      Variables:
+        # DynamoDB テーブル名（後で参照）
+        CREDENTIALS_TABLE: !Ref CredentialsTable
+        CHALLENGES_TABLE: !Ref ChallengesTable
+        RP_ID: !Ref RPId
+        RP_NAME: !Ref RPName
+        ALLOWED_ORIGIN: !Ref AllowedOrigin
+
+# -------------------------------------------------------
+# リソース定義
+# -------------------------------------------------------
+Resources:
+
+  # ---------------------------------------------------
+  # DynamoDB: ユーザー認証情報テーブル
+  #   - userId（ハッシュキー）
+  #   - credentialId（ソートキー）
+  #   - publicKey, signCount, displayName など
+  # ---------------------------------------------------
+  CredentialsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "moc-poc-credentials-${StageName}"
+      BillingMode: PAY_PER_REQUEST  # オンデマンド（PoC規模は安価）
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: credentialId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: credentialId
+          KeyType: RANGE
+      # GSI: credentialId だけで引けるようにする（認証フロー用）
+      GlobalSecondaryIndexes:
+        - IndexName: credentialId-index
+          KeySchema:
+            - AttributeName: credentialId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: false  # PoC では無効（コスト節約）
+
+  # ---------------------------------------------------
+  # DynamoDB: チャレンジ一時保存テーブル
+  #   - challengeId（ハッシュキー）: ランダムUUID
+  #   - challenge, userId, expiresAt
+  #   - TTL で自動削除（5分）
+  # ---------------------------------------------------
+  ChallengesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "moc-poc-challenges-${StageName}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: challengeId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: challengeId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt  # Unix タイムスタンプ（秒）
+        Enabled: true             # TTL 経過後に自動削除
+
+  # ---------------------------------------------------
+  # Lambda: 登録開始（チャレンジ発行）
+  #   POST /register/begin
+  # ---------------------------------------------------
+  RegisterBeginFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "moc-poc-register-begin-${StageName}"
+      CodeUri: ../lambda/
+      Handler: register.begin_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChallengesTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /api/register/begin
+            Method: POST
+
+  # ---------------------------------------------------
+  # Lambda: 登録完了（公開鍵の保存）
+  #   POST /register/complete
+  # ---------------------------------------------------
+  RegisterCompleteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "moc-poc-register-complete-${StageName}"
+      CodeUri: ../lambda/
+      Handler: register.complete_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChallengesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CredentialsTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /api/register/complete
+            Method: POST
+
+  # ---------------------------------------------------
+  # Lambda: 認証開始（チャレンジ発行）
+  #   POST /auth/begin
+  # ---------------------------------------------------
+  AuthBeginFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "moc-poc-auth-begin-${StageName}"
+      CodeUri: ../lambda/
+      Handler: authenticate.begin_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChallengesTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref CredentialsTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /api/auth/begin
+            Method: POST
+
+  # ---------------------------------------------------
+  # Lambda: 認証完了（署名検証）
+  #   POST /api/auth/complete
+  #   PoC: Provisioned Concurrency 無効（アカウント同時実行上限のため）
+  #   本番: AutoPublishAlias + ProvisionedConcurrentExecutions: 1 を有効化すること
+  # ---------------------------------------------------
+  AuthCompleteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "moc-poc-auth-complete-${StageName}"
+      CodeUri: ../lambda/
+      Handler: authenticate.complete_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChallengesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CredentialsTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /api/auth/complete
+            Method: POST
+
+  # ---------------------------------------------------
+  # API Gateway: REST API
+  # ---------------------------------------------------
+  Api:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "moc-poc-api-${StageName}"
+      StageName: !Ref StageName
+      Cors:
+        AllowOrigin: !Sub "'${AllowedOrigin}'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization'"
+        AllowMethods: "'GET,POST,OPTIONS'"
+      # API キーなし（PoC ではパブリックアクセス）
+
+  # ---------------------------------------------------
+  # S3: フロントエンド静的ファイルホスティング
+  # ---------------------------------------------------
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "moc-poc-frontend-${StageName}-${AWS::AccountId}"
+      # CloudFront 経由でのみアクセス許可（OAC使用）
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # S3 バケットポリシー: CloudFront OAC からのアクセスのみ許可
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${FrontendBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}"
+
+  # ---------------------------------------------------
+  # CloudFront OAC (Origin Access Control)
+  #   S3 への直接アクセスを防ぐ
+  # ---------------------------------------------------
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "moc-poc-oac-${StageName}"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # ---------------------------------------------------
+  # CloudFront: CDN ディストリビューション
+  #   - /api/* → API Gateway
+  #   - /*     → S3（フロントエンド）
+  # ---------------------------------------------------
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub "MoC指紋認証 PoC - ${StageName}"
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        PriceClass: PriceClass_200
+
+        # オリジン定義
+        Origins:
+          # S3 オリジン（フロントエンド）
+          - Id: S3Origin
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+            S3OriginConfig: {}
+
+          # API Gateway オリジン
+          - Id: ApiOrigin
+            DomainName: !Sub "${Api}.execute-api.${AWS::Region}.amazonaws.com"
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+            OriginPath: !Sub "/${StageName}"
+
+        # デフォルト: S3（フロントエンド）
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized
+          AllowedMethods: [GET, HEAD, OPTIONS]
+
+        # /api/* は API Gateway へルーティング
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: ApiOrigin
+            ViewerProtocolPolicy: https-only
+            # API はキャッシュしない
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad  # CachingDisabled
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # AllViewerExceptHostHeader
+
+        # SPA フォールバック: 404 を index.html で返す
+        CustomErrorResponses:
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+# -------------------------------------------------------
+# 出力: デプロイ後に確認できる情報
+# -------------------------------------------------------
+Outputs:
+  CloudFrontUrl:
+    Description: "フロントエンド URL（CloudFront）"
+    Value: !Sub "https://${CloudFrontDistribution.DomainName}"
+
+  ApiEndpoint:
+    Description: "API Gateway エンドポイント"
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
+
+  CredentialsTableName:
+    Description: "DynamoDB 認証情報テーブル名"
+    Value: !Ref CredentialsTable
+
+  ChallengesTableName:
+    Description: "DynamoDB チャレンジテーブル名"
+    Value: !Ref ChallengesTable
+
+  FrontendBucketName:
+    Description: "S3 フロントエンドバケット名"
+    Value: !Ref FrontendBucket

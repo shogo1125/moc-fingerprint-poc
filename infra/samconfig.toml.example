@@ -1,0 +1,27 @@
+# AWS SAM デプロイ設定ファイル（テンプレート）
+# 使い方: cp infra/samconfig.toml.example infra/samconfig.toml
+# 初回デプロイ後、CloudFormation 出力の CloudFront URL に合わせて RPId / AllowedOrigin を更新する
+
+version = 0.1
+
+# -------------------------------------------------------
+# PoC 環境のデプロイ設定
+# -------------------------------------------------------
+[default.deploy.parameters]
+stack_name          = "moc-poc-fido2"
+region              = "ap-northeast-1"   # 東京リージョン
+capabilities        = "CAPABILITY_IAM"
+confirm_changeset   = true
+resolve_s3          = true
+
+# デプロイ時に上書きするパラメータ（初回デプロイ後に RP_ID を CloudFront ドメインに変更）
+parameter_overrides = [
+  "StageName=poc",
+  "RPId=localhost",
+  "RPName=MoC指紋認証PoC",
+  "AllowedOrigin=http://localhost:8080",
+]
+
+# SAM ビルド設定
+[default.build.parameters]
+use_container = false  # Lambda レイヤーを使う場合は true

@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# SAM / AWS
+.aws-sam/
+samconfig.toml.bak
+infra/samconfig.toml
+
+# 環境・キャプチャ
+.env
+*.har
+*.pcap
+
+# ローカルメモ（社内方針など）
+アイディア
+
+# macOS
+.DS_Store
